@@ -1,0 +1,15 @@
+[submodule "auth-service"]
+	path = auth-service
+	url = git@github.com:lpcoutinho/safehire-auth-service.git
+[submodule "api-gateway"]
+	path = api-gateway
+	url = git@github.com:lpcoutinho/safehire-api-gateway.git
+[submodule "core-management-api"]
+	path = core-management-api
+	url = git@github.com:lpcoutinho/safehire-core-management-api.git
+[submodule "agent-worker-service"]
+	path = agent-worker-service
+	url = git@github.com:lpcoutinho/safehire-agent-worker-service.git
+[submodule "frontend-app"]
+	path = frontend-app
+	url = git@github.com:lpcoutinho/safehire-frontend-app.git
