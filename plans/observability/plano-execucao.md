@@ -15,36 +15,47 @@ O projeto SafeHire AI atualmente não possui uma camada de observabilidade estru
 
 ## Arquitetura de Observabilidade Proposta
 
-### Stack de Desenvolvimento (Local)
+### Stack de Desenvolvimento (Local - Floci)
+
+**Conceito:** Em desenvolvimento, toda a infraestrutura AWS (incluindo observabilidade)
+é emulada pelo **Floci**, eliminando a necessidade de serviços separados como Prometheus/Grafana.
+A instrumentação usa AWS SDK diretamente (boto3), idêntico à produção.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│              LAYER DE OBSERVABILIDADE LOCAL (DEV)                   │
+│              LAYER DE OBSERVABILIDADE LOCAL (FLOCI)                 │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────┐  │
-│  │  GRAFANA     │  │  UPTIME KUMA │  │  PROMETHEUS  │  │ JAEGER  │  │
-│  │  :3001       │  │  :3002       │  │  :9090       │  │ :16686  │  │
-│  │  Dashboards  │  │  Monitors    │  │  Metrics     │  │ Tracing │  │
-│  └──────┬───────┘  └──────────────┘  └──────┬───────┘  └────┬────┘  │
-│         │                                  │              │         │
-│         └──────────────────────────────────┼──────────────┘         │
-│                                            │                        │
-│         ┌──────────────────────────────────┼──────────────┐         │
-│         │                                  │              │         │
-│  ┌──────▼──────┐  ┌──────────────┐  ┌──────▼──────┐  ┌──▼───────┐   │
-│  │   LOKI      │  │   TEMPO      │  │  ALERTMGR   │  │ OTEL     │   │
-│  │  :3100      │  │  :3200       │  │  :9093      │  │ Collector│   │
-│  │  Logs       │  │  Distributed │  │  Alerts     │  │ :4317    │   │
-│  └─────────────┘  │  Tracing     │  └─────────────┘  └──────────┘   │
-│                   └──────────────┘                                  │
-└─────────────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│                    SERVIÇOS DA APLICAÇÃO (LOCAL)                    │
-│  (com instrumentação OpenTelemetry)                                 │
-├─────────────────────────────────────────────────────────────────────┤
-│  auth-service | api-gateway | core-api | agent-worker | frontend    │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │                    FLOCI (AWS Emulator)                       │  │
+│  │                        :4566                                  │  │
+│  │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐   │  │
+│  │  │ CloudWatch     │  │ CloudWatch     │  │   X-Ray        │   │  │
+│  │  │   Metrics      │  │   Logs         │  │   (Tracing)    │   │  │
+│  │  └────────────────┘  └────────────────┘  └────────────────┘   │  │
+│  │  ┌────────────────┐  ┌────────────────┐                       │  │
+│  │  │ CloudWatch     │  │ CloudWatch     │                       │  │
+│  │  │   Alarms       │  │  Dashboards    │                       │  │
+│  │  └────────────────┘  └────────────────┘                       │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                            ↓                                        │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │              OPENTELEMETRY COLLECTOR (otel-collector)         │  │
+│  │                :4317 (gRPC)  /  :4318 (HTTP)                  │  │
+│  │    Exporta traces/logs/metrics para o CloudWatch do Floci     │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                            ↓                                        │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                   SERVIÇOS DA APLICAÇÃO (LOCAL)             │    │
+│  │  (instrumentação AWS SDK → floci:4566)                      │    │
+│  ├─────────────────────────────────────────────────────────────┤    │
+│  │  auth-service | api-gateway | core-api | agent-worker |     │    │
+│  │  frontend                                                   │    │
+│  │  • boto3 → floci:4566 (S3, SQS)                             │    │
+│  │  • CloudWatch Logs → floci:4566                             │    │
+│  │  • CloudWatch Metrics → floci:4566                          │    │
+│  │  • X-Ray → floci:4566                                       │    │
+│  └─────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,8 +95,46 @@ O projeto SafeHire AI atualmente não possui uma camada de observabilidade estru
 │  └─────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────┘
 ```
+### Stack de VPS (Autogerenciado)
 
-### Estratégia Dual-Stack
+Para cenários onde a aplicação é deployada em uma VPS (ex: Hostinger) sem acesso
+aos serviços gerenciados da AWS, utilizamos a stack open-source tradicional:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│              LAYER DE OBSERVABILIDADE VPS (SELF-HOSTED)             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────┐  │
+│  │  GRAFANA     │  │  UPTIME KUMA │  │  PROMETHEUS  │  │ JAEGER  │  │
+│  │  :3001       │  │  :3002       │  │  :9090       │  │ :16686  │  │
+│  │  Dashboards  │  │  Monitors    │  │  Metrics     │  │ Tracing │  │
+│  └──────┬───────┘  └──────────────┘  └──────┬───────┘  └────┬────┘  │
+│         │                                  │              │         │
+│         └──────────────────────────────────┼──────────────┘         │
+│                                            │                        │
+│         ┌──────────────────────────────────┼──────────────┐         │
+│         │                                  │              │         │
+│  ┌──────▼──────┐  ┌──────────────┐  ┌──────▼──────┐  ┌──▼───────┐   │
+│  │   LOKI      │  │   TEMPO      │  │  ALERTMGR   │  │ OTEL     │   │
+│  │  :3100      │  │  :3200       │  │  :9093      │  │ Collector│   │
+│  │  Logs       │  │  Distributed │  │  Alerts     │  │ :4317    │   │
+│  └─────────────┘  │  Tracing     │  └─────────────┘  └──────────┘   │
+│                   └──────────────┘                                  │
+└─────────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│                    SERVIÇOS DA APLICAÇÃO (VPS)                      │
+│  (com instrumentação OpenTelemetry)                                 │
+├─────────────────────────────────────────────────────────────────────┤
+│  auth-service | api-gateway | core-api | agent-worker | frontend    │
+│  • Infra real: PostgreSQL / RabbitMQ / Valkey                       │
+│  • S3 alternativo: MinIO ou bucket local                            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Estratégia Triple-Stack (Floci / VPS / AWS)
+
 
 ```
                     ┌─────────────────┐
@@ -93,38 +142,44 @@ O projeto SafeHire AI atualmente não possui uma camada de observabilidade estru
                     │   (Python/TS)   │
                     └────────┬────────┘
                              │
-              ┌──────────────┼──────────────┐
-              │              │              │
-              ▼              ▼              ▼
-    ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-    │  DEVELOPMENT│  │   STAGING   │  │  PRODUCTION │
-    │    (Local)  │  │    (AWS)    │  │    (AWS)    │
-    └─────────────┘  └─────────────┘  └─────────────┘
-              │              │               │
-    ┌─────────▼─────┐  ┌─────▼──────┐  ┌─────▼──────┐
-    │ Prometheus +  │  │ Prometheus │  │ CloudWatch │
-    │ Grafana Local │  │  + Grafana │  │    + X-Ray │
-    └───────────────┘  └────────────┘  └────────────┘
+          ┌──────────────────┼──────────────────┐
+          │                  │                  │
+          ▼                  ▼                  ▼
+┌────────────────┐ ┌────────────────┐ ┌────────────────┐
+│  DEV (FLOCI)   │ │  VPS (SELF)    │ │  PRODUCTION    │
+│  (Local)       │ │  (Hostinger)   │ │    (AWS)       │
+└────────────────┘ └────────────────┘ └────────────────┘
+          │                  │                  │
+┌─────────▼────────┐ ┌──────▼───────┐ ┌──────▼───────┐
+│  CloudWatch (via │ │ Prometheus + │ │  CloudWatch  │
+│  Floci) + X-Ray  │ │ Grafana Local│ │   + X-Ray    │
+└──────────────────┘ └──────────────┘ └──────────────┘
 ```
 
-**Ambiente**: Variável `ENV=development|staging|production` determina a stack de observabilidade.
+**Ambiente**: Variável `ENV=development|vps|production` ou `OBSERVABILITY_STACK=floci|vps|aws` determina a stack de observabilidade.
 
 ---
 
 ## Serviços de Observabilidade a Adicionar
 
-### Stack Local (Desenvolvimento)
+### Stack Floci (Desenvolvimento Local)
 
-| Serviço | Porta | Propósito | Stack |
-|---------|-------|-----------|-------|
-| **Prometheus** | 9090 | Coleta de métricas | Metrics |
-| **Grafana** | 3001 | Visualização e dashboards | Visualization |
-| **Loki** | 3100 | Agregação de logs estruturados | Logging |
-| **Tempo** | 3200 | Distributed tracing com OpenTelemetry | Tracing |
-| **Jaeger** | 16686 | Visualização de traces | Tracing UI |
-| **Alertmanager** | 9093 | Gerenciamento de alertas | Alerting |
-| **Uptime Kuma** | 3002 | Monitoramento de uptime e status | Uptime Monitor |
-| **OpenTelemetry Collector** | 4317 | Coleta centralizada de traces/metrics/logs | OTEL |
+No ambiente de desenvolvimento, a observabilidade é feita **via Floci** (emulador AWS),
+eliminando a necessidade de rodar Prometheus/Grafana/Loki/Tempo separadamente.
+
+| Serviço | Porta | Propósito | Tipo |
+|---------|-------|-----------|------|
+| **Floci** (AWS Emulator) | 4566 | Emula todos os serviços AWS (S3, SQS, RDS, ElastiCache, CloudWatch, X-Ray) | Infra + Observability |
+| **CloudWatch Metrics + Logs + Dashboards** | via Floci | Métricas, logs centralizados e dashboards | Observability |
+| **AWS X-Ray** | via Floci | Distributed tracing entre serviços | Tracing |
+| **CloudWatch Alarms** | via Floci | Alertas baseados em métricas | Alerting |
+| **OpenTelemetry Collector** | 4317 | Coleta e exporta traces/metrics/logs para o Floci | OTEL Collector |
+
+**Vantagens:**
+- Código de instrumentação **idêntico** entre dev e produção (mesma SDK AWS)
+- Sem necessidade de manter múltiplos serviços de observabilidade em dev
+- Suporte nativo a distributed tracing via X-Ray
+- Baixo consumo de recursos (único container)
 
 ### Stack AWS (Produção)
 
@@ -140,6 +195,22 @@ O projeto SafeHire AI atualmente não possui uma camada de observabilidade estru
 | **Amazon Managed Prometheus** | Prometheus gerenciado (opcional) | - |
 | **Amazon Managed Grafana** | Grafana gerenciado (opcional) | - |
 
+### Stack VPS (Hostinger / Open Source)
+
+Para ambientes autogerenciados em VPS, a stack open-source substitui os serviços AWS:
+
+| Serviço | Porta | Propósito | Stack |
+|---------|-------|-----------|-------|
+| **Prometheus** | 9090 | Coleta de métricas | Metrics |
+| **Grafana** | 3001 | Visualização e dashboards | Visualization |
+| **Loki** | 3100 | Agregação de logs estruturados | Logging |
+| **Tempo** | 3200 | Distributed tracing com OpenTelemetry | Tracing |
+| **Jaeger** | 16686 | Visualização de traces | Tracing UI |
+| **Alertmanager** | 9093 | Gerenciamento de alertas | Alerting |
+| **Uptime Kuma** | 3002 | Monitoramento de uptime e status | Uptime Monitor |
+| **OpenTelemetry Collector** | 4317 | Coleta centralizada de traces/metrics/logs | OTEL |
+| **MinIO** (opcional) | 9000 | Armazenamento S3-compatível | Storage |
+
 **Nota sobre portas:**
 - Grafana: 3001
 - Uptime Kuma: 3002 (ajustado para evitar conflito)
@@ -150,18 +221,25 @@ O projeto SafeHire AI atualmente não possui uma camada de observabilidade estru
 
 ### Fase 1: Infraestrutura de Observabilidade (Dia 1-2)
 
+> **Nota:** Para desenvolvimento local com Floci, a observabilidade já está embutida no container Floci.
+> Os passos abaixo referem-se à configuração da **stack VPS (open-source)** ou complementos ao Floci.
+
+
 #### 1.1 Adicionar Serviços ao Docker Compose
-- [ ] Adicionar Prometheus ao docker-compose.yml
-- [ ] Adicionar Grafana ao docker-compose.yml
-- [ ] Adicionar Loki ao docker-compose.yml
-- [ ] Adicionar Tempo ao docker-compose.yml
-- [ ] Adicionar Alertmanager ao docker-compose.yml
-- [ ] Adicionar Uptime Kuma ao docker-compose.yml
-- [ ] Adicionar OpenTelemetry Collector ao docker-compose.yml
+- [ ] **Floci:** Verificar se `SERVICES` inclui `cloudwatch` e `xray` no docker-compose.yml
+- [ ] **Floci:** Criar script de init para configurar log groups e dashboards iniciais
+- [ ] **Floci:** Adicionar OpenTelemetry Collector ao docker-compose.yml (exporta para Floci)
+- [ ] **VPS:** Adicionar Prometheus ao docker-compose.observability.yml
+- [ ] **VPS:** Adicionar Grafana ao docker-compose.observability.yml
+- [ ] **VPS:** Adicionar Loki ao docker-compose.observability.yml
+- [ ] **VPS:** Adicionar Tempo ao docker-compose.observability.yml
+- [ ] **VPS:** Adicionar Alertmanager ao docker-compose.observability.yml
+- [ ] **VPS:** Adicionar Uptime Kuma ao docker-compose.observability.yml
+- [ ] **VPS:** Adicionar OpenTelemetry Collector ao docker-compose.observability.yml
 - [ ] Criar network `observability-network`
 - [ ] Criar volumes para persistência de dados
 
-#### 1.2 Configuração de Prometheus
+#### 1.2 Configuração de Prometheus (Stack VPS)
 - [ ] Criar `monitoring/prometheus/prometheus.yml` com scrape configs
 - [ ] Criar `monitoring/prometheus/alerts.yml` com regras de alerta
 - [ ] Configurar scrape jobs para todos os serviços
@@ -210,18 +288,20 @@ O projeto SafeHire AI atualmente não possui uma camada de observabilidade estru
 ```python
 # observability/factory.py
 from typing import Literal
-from observability.metrics_local import LocalMetrics
-from observability.metrics_aws import CloudWatchMetrics
-from observability.logging_local import LocalLogger
-from observability.logging_aws import CloudWatchLogger
-from observability.tracing_local import LocalTracer
-from observability.tracing_aws import XRayTracer
+from observability.metrics_aws import CloudWatchMetrics  # usado por floci e aws
+from observability.metrics_local import LocalMetrics     # usado por vps
+from observability.logging_aws import CloudWatchLogger   # usado por floci e aws
+from observability.logging_local import LocalLogger      # usado por vps
+from observability.tracing_aws import XRayTracer         # usado por floci e aws
+from observability.tracing_local import LocalTracer      # usado por vps
 
-ObservabilityStack = Literal['local', 'aws', 'hybrid']
+ObservabilityStack = Literal['floci', 'vps', 'aws']
 
 def create_metrics(stack: ObservabilityStack, service_name: str):
     """Factory para criar cliente de métricas."""
-    if stack in ['local', 'hybrid']:
+    if stack == 'floci':
+        return CloudWatchMetrics(f"SafeHire/{service_name}", endpoint_url='http://floci:4566')
+    elif stack == 'vps':
         return LocalMetrics(service_name)
     elif stack == 'aws':
         return CloudWatchMetrics(f"SafeHire/{service_name}")
@@ -230,7 +310,9 @@ def create_metrics(stack: ObservabilityStack, service_name: str):
 
 def create_logger(stack: ObservabilityStack, service_name: str):
     """Factory para criar logger."""
-    if stack in ['local', 'hybrid']:
+    if stack == 'floci':
+        return CloudWatchLogger(f"/aws/ecs/{service_name}", endpoint_url='http://floci:4566')
+    elif stack == 'vps':
         return LocalLogger(service_name)
     elif stack == 'aws':
         return CloudWatchLogger(f"/aws/ecs/{service_name}")
@@ -239,7 +321,9 @@ def create_logger(stack: ObservabilityStack, service_name: str):
 
 def create_tracer(stack: ObservabilityStack, service_name: str):
     """Factory para criar tracer."""
-    if stack in ['local', 'hybrid']:
+    if stack == 'floci':
+        return XRayTracer(service_name, daemon_address='floci:2000')
+    elif stack == 'vps':
         return LocalTracer(service_name)
     elif stack == 'aws':
         return XRayTracer(service_name)
@@ -344,7 +428,7 @@ def create_tracer(stack: ObservabilityStack, service_name: str):
 
 ---
 
-### Fase 4: AWS CloudWatch - Produção (Dia 8-10)
+### Fase 4: AWS CloudWatch + Floci Production / VPS (Dia 8-10)
 
 #### 4.1 Infraestrutura AWS
 - [ ] Criar bucket S3 para logs (opcional)
@@ -451,15 +535,15 @@ from os import getenv
 from observability.factory import create_metrics, create_logger, create_tracer
 
 ENV = getenv('ENV', 'development')
-OBSERVABILITY_STACK = getenv('OBSERVABILITY_STACK', 'aws' if ENV == 'production' else 'local')
+OBSERVABILITY_STACK = getenv('OBSERVABILITY_STACK', 'floci')
 
 # Auto-select stack based on environment
 if ENV == 'production':
     OBSERVABILITY_STACK = 'aws'
-elif ENV == 'staging':
-    OBSERVABILITY_STACK = 'hybrid'  # Local + AWS logs
+elif ENV == 'vps':
+    OBSERVABILITY_STACK = 'vps'  # Open-source stack (Prometheus/Grafana)
 else:
-    OBSERVABILITY_STACK = 'local'
+    OBSERVABILITY_STACK = 'floci'  # AWS emulation via Floci
 
 # Create observability clients
 metrics = create_metrics(OBSERVABILITY_STACK, 'auth-service')
@@ -469,15 +553,15 @@ tracer = create_tracer(OBSERVABILITY_STACK, 'auth-service')
 
 ### Estratégias de Stack
 
-| Estratégia | Local | Staging | Produção |
-|------------|-------|---------|-----------|
-| **local** | Prometheus/Loki/Tempo | - | - |
-| **aws** | CloudWatch | CloudWatch | CloudWatch |
-| **hybrid** | Prometheus/Loki | Prometheus + CloudWatch Logs | - |
+| Estratégia | Dev (Floci) | VPS (Hostinger) | Produção (AWS) |
+|------------|-------------|-----------------|----------------|
+| **floci** | CloudWatch (via Floci) | - | - |
+| **vps** | - | Prometheus/Grafana/Loki | - |
+| **aws** | - | - | CloudWatch + X-Ray |
 
 **Recomendação:**
-- **Desenvolvimento**: `local` - Stack completa local
-- **Staging**: `hybrid` - Métricas locais + Logs AWS para debugging
+- **Desenvolvimento**: `floci` - Código idêntico à produção, baixo overhead
+- **VPS (Hostinger)**: `vps` - Stack open-source auto-gerenciada
 - **Produção**: `aws` - Stack completa AWS nativa
 
 ### Arquivo de Configuração
@@ -487,19 +571,23 @@ tracer = create_tracer(OBSERVABILITY_STACK, 'auth-service')
 from pydantic_settings import BaseSettings
 
 class ObservabilityConfig(BaseSettings):
-    stack: str = 'local'
+    stack: str = 'floci'
     environment: str = 'development'
     service_name: str = 'safehire'
 
-    # Local stack
+    # Floci stack (dev)
+    floci_endpoint: str = 'http://floci:4566'
+    xray_daemon_address: str = 'floci:2000'
+
+    # VPS stack (open-source)
     prometheus_url: str = 'http://prometheus:9090'
     loki_url: str = 'http://loki:3100'
     tempo_url: str = 'http://tempo:3200'
 
-    # AWS stack
+    # AWS stack (production)
     aws_region: str = 'us-east-1'
     cloudwatch_log_group: str = '/aws/ecs/safehire'
-    xray_daemon_address: str = '127.0.0.1:2000'
+    xray_daemon_address_aws: str = '127.0.0.1:2000'
 
     # General
     log_level: str = 'INFO'
@@ -521,7 +609,7 @@ config = ObservabilityConfig()
 
 | Arquivo | Descrição |
 |---------|-----------|
-| `docker-compose.observability.yml` | Docker Compose completo com observabilidade |
+| `docker-compose.observability.yml` | Docker Compose com observabilidade (VPS/stack open-source) |
 | `monitoring/prometheus/prometheus.yml` | Configuração Prometheus |
 | `monitoring/prometheus/alerts.yml` | Regras de alerta |
 | `monitoring/grafana/datasources/prometheus.yml` | Datasource Prometheus |
@@ -536,8 +624,9 @@ config = ObservabilityConfig()
 
 | Arquivo | Modificações |
 |---------|--------------|
-| `docker-compose.yml` | Incluir services de observabilidade (dev) |
+| `docker-compose.yml` | Observabilidade já inclusa via Floci (dev) |
 | `docker-compose.aws.yml` | Configuração para produção AWS |
+| `docker-compose.vps.yml` | Configuração para VPS Hostinger (stack open-source) |
 | `.env.observability.example` | Variáveis de ambiente |
 | `auth-service/requirements.txt` | Adicionar dependências |
 | `api-gateway/requirements.txt` | Adicionar dependências |
@@ -549,19 +638,26 @@ config = ObservabilityConfig()
 
 ```env
 # Stack de Observabilidade
-OBSERVABILITY_STACK=local|aws|hybrid
-ENV=development|staging|production
+OBSERVABILITY_STACK=floci|vps|aws
+ENV=development|vps|production
 
-# Local Stack (Prometheus/Grafana)
+# Floci Stack (desenvolvimento local)
+FLOCI_ENDPOINT=http://floci:4566
+AWS_ACCESS_KEY_ID=test_access_key
+AWS_SECRET_ACCESS_KEY=test_secret_key
+AWS_REGION=us-east-1
+XRAY_DAEMON_ADDRESS=floci:2000
+
+# VPS Stack (Hostinger - Prometheus/Grafana)
 PROMETHEUS_URL=http://prometheus:9090
 GRAFANA_URL=http://grafana:3001
 LOKI_URL=http://loki:3100
 TEMPO_URL=http://tempo:3200
 
-# AWS Stack (CloudWatch)
+# AWS Stack (CloudWatch - Produção)
 AWS_REGION=us-east-1
 CLOUDWATCH_LOG_GROUP=/aws/ecs/safehire
-XRAY_DAEMON_ADDRESS=xray-daemon:2000
+XRAY_DAEMON_ADDRESS_AWS=xray-daemon:2000
 CLOUDWATCH_RUM_APP_ID=safehire-frontend
 CLOUDWATCH_RUM_IDENTITY_POOL=us-east-1:xxxx
 
@@ -758,6 +854,17 @@ consumer_lag = Gauge(
 
 ### Checklist de Validação
 
+### Checklist Floci (Dev)
+- [ ] Floci está rodando com `cloudwatch` e `xray` habilitados
+- [ ] boto3 consegue criar log groups e enviar logs para Floci
+- [ ] boto3 consegue enviar métricas customizadas para Floci
+- [ ] X-Ray consegue registrar e propagar traces via Floci
+- [ ] OpenTelemetry Collector exporta traces/metrics/logs para Floci
+- [ ] Distributed tracing funciona entre serviços (via Floci/X-Ray)
+- [ ] Métricas de CrewAI são coletadas via CloudWatch Metrics emulado
+- [ ] Logs são estruturados em JSON e enviados para CloudWatch Logs emulado
+
+### Checklist VPS (Hostinger)
 - [ ] Prometheus coleta métricas de todos os serviços
 - [ ] Grafana exibe dashboards corretamente
 - [ ] Loki coleta e exibe logs estruturados
@@ -765,17 +872,21 @@ consumer_lag = Gauge(
 - [ ] Alertmanager envia alertas configurados
 - [ ] Uptime Kuma detecta falhas de serviços
 - [ ] Health checks funcionam em todos os serviços
-- [ ] Distributed tracing funciona entre serviços
-- [ ] Métricas de CrewAI são coletadas
-- [ ] Logs são estruturados em JSON
 
 ### Comandos de Validação
 
 ```bash
 # Verificar status dos serviços de observabilidade
+docker compose ps floci  # Verifica status do Floci
+
+# Para VPS:
 docker-compose -f docker-compose.observability.yml ps
 
 # Testar Prometheus
+# Floci: verificar health do CloudWatch emulado
+curl http://localhost:4566/_localstack/health | jq .
+
+# VPS: verificar targets do Prometheus
 curl http://localhost:9090/api/v1/targets
 
 # Testar métricas de um serviço
@@ -797,10 +908,22 @@ curl http://localhost:9093/api/v1/alerts
 
 ```makefile
 # Observabilidade commands
-observability-up: ## Inicia serviços de observabilidade
+
+## Floci (desenvolvimento local - stack recomendada)
+floci-health: ## Verifica health do Floci (inclui CloudWatch emulado)
+	curl http://localhost:4566/_localstack/health | jq .
+
+floci-logs: ## Ver logs do Floci
+	docker compose logs --tail=50 floci
+
+floci-shell: ## Entra no shell do container Floci
+	docker compose exec floci bash
+
+## VPS (Hostinger - stack open-source)
+observability-up: ## Inicia serviços de observabilidade (VPS)
 	docker-compose -f docker-compose.observability.yml up -d
 
-observability-down: ## Para serviços de observabilidade
+observability-down: ## Para serviços de observabilidade (VPS)
 	docker-compose -f docker-compose.observability.yml down
 
 grafana: ## Abre Grafana no navegador
@@ -825,15 +948,18 @@ alerts: ## Lista alertas ativos
 
 ### URLs de Acesso
 
-| Serviço | URL | Credenciais |
-|---------|-----|-------------|
-| Grafana | http://localhost:3001 | admin/admin (mudar no primeiro acesso) |
-| Prometheus | http://localhost:9090 | - |
-| Tempo | http://localhost:3200 | - |
-| Loki | http://localhost:3100 | - |
-| Alertmanager | http://localhost:9093 | - |
-| Uptime Kuma | http://localhost:3002 | admin/admin (mudar no primeiro acesso) |
-| RabbitMQ Management | http://localhost:15672 | guest/guest |
+| Serviço | URL | Stack | Credenciais |
+|---------|-----|-------|-------------|
+| **Floci** (AWS Emulator) | http://localhost:4566 | Dev | test_access_key / test_secret_key |
+| **S3 Management** | http://localhost:8089 | Dev | - |
+| **SQS Management** | http://localhost:9327 | Dev | - |
+| Grafana | http://localhost:3001 | VPS | admin/admin (mudar no primeiro acesso) |
+| Prometheus | http://localhost:9090 | VPS | - |
+| Tempo | http://localhost:3200 | VPS | - |
+| Loki | http://localhost:3100 | VPS | - |
+| Alertmanager | http://localhost:9093 | VPS | - |
+| Uptime Kuma | http://localhost:3002 | VPS | admin/admin (mudar no primeiro acesso) |
+| RabbitMQ Management | http://localhost:15672 | Todas | guest/guest |
 
 ### Links Úteis
 
@@ -860,7 +986,9 @@ Após implementação:
 
 ### Visão Geral
 
-**AWS CloudWatch** é a solução nativa de observabilidade da Amazon para ambientes de produção. Inclui:
+**AWS CloudWatch** é a solução nativa de observabilidade da Amazon para ambientes de produção.
+
+> **Nota para Desenvolvimento:** Em ambientes locais, o **Floci** emula os mesmos endpoints da AWS (CloudWatch Metrics, CloudWatch Logs, X-Ray), permitindo usar exatamente o mesmo código de instrumentação. A variável de ambiente `FLOCI_ENDPOINT=http://floci:4566` direciona o SDK para o emulador local. Inclui:
 
 | Componente | AWS Service | Função |
 |------------|-------------|--------|
@@ -920,6 +1048,43 @@ Após implementação:
 │  └─────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────┘
 ```
+### Stack de VPS (Hostinger / Autogerenciado)
+
+Para cenários onde a aplicação é deployada em uma VPS (ex: Hostinger) sem acesso
+aos serviços gerenciados da AWS, utilizamos a stack open-source tradicional:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│              LAYER DE OBSERVABILIDADE VPS (SELF-HOSTED)             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────┐  │
+│  │  GRAFANA     │  │  UPTIME KUMA │  │  PROMETHEUS  │  │ JAEGER  │  │
+│  │  :3001       │  │  :3002       │  │  :9090       │  │ :16686  │  │
+│  │  Dashboards  │  │  Monitors    │  │  Metrics     │  │ Tracing │  │
+│  └──────┬───────┘  └──────────────┘  └──────┬───────┘  └────┬────┘  │
+│         │                                  │              │         │
+│         └──────────────────────────────────┼──────────────┘         │
+│                                            │                        │
+│         ┌──────────────────────────────────┼──────────────┐         │
+│         │                                  │              │         │
+│  ┌──────▼──────┐  ┌──────────────┐  ┌──────▼──────┐  ┌──▼───────┐   │
+│  │   LOKI      │  │   TEMPO      │  │  ALERTMGR   │  │ OTEL     │   │
+│  │  :3100      │  │  :3200       │  │  :9093      │  │ Collector│   │
+│  │  Logs       │  │  Distributed │  │  Alerts     │  │ :4317    │   │
+│  └─────────────┘  │  Tracing     │  └─────────────┘  └──────────┘   │
+│                   └──────────────┘                                  │
+└─────────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│                    SERVIÇOS DA APLICAÇÃO (VPS)                      │
+│  (com instrumentação OpenTelemetry)                                 │
+├─────────────────────────────────────────────────────────────────────┤
+│  auth-service | api-gateway | core-api | agent-worker | frontend    │
+│  • Infra real: PostgreSQL / RabbitMQ / Valkey                       │
+│  • S3 alternativo: MinIO ou bucket local                            │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -936,8 +1101,11 @@ from typing import Dict, Any
 from datetime import datetime
 
 class CloudWatchLogger:
-    def __init__(self, log_group_name: str, region: str = "us-east-1"):
-        self.client = boto3.client('logs', region_name=region)
+    def __init__(self, log_group_name: str, region: str = "us-east-1", endpoint_url: str = None):
+        client_kwargs = {'region_name': region}
+        if endpoint_url:
+            client_kwargs['endpoint_url'] = endpoint_url
+        self.client = boto3.client('logs', **client_kwargs)
         self.log_group_name = log_group_name
         self.stream_name = self._create_log_stream()
 
@@ -984,8 +1152,11 @@ import time
 from typing import Optional
 
 class CloudWatchMetrics:
-    def __init__(self, namespace: str, region: str = "us-east-1"):
-        self.client = boto3.client('cloudwatch', region_name=region)
+    def __init__(self, namespace: str, region: str = "us-east-1", endpoint_url: str = None):
+        client_kwargs = {'region_name': region}
+        if endpoint_url:
+            client_kwargs['endpoint_url'] = endpoint_url
+        self.client = boto3.client('cloudwatch', **client_kwargs)
         self.namespace = namespace
         self._metrics_buffer = []
 
@@ -1450,7 +1621,7 @@ def create_safehire_dashboard():
 
 ---
 
-### Integração com ECS (Docker em Produção)
+### Integração com ECS (AWS) / Docker Compose (VPS)
 
 ```yaml
 # ecs-task-definition.json
@@ -1546,16 +1717,17 @@ def create_safehire_dashboard():
 
 ### AWS CloudWatch vs Stack Local
 
-| Aspecto | Desenvolvimento (Local) | Produção (AWS) |
-|---------|--------------------------|----------------|
-| **Métricas** | Prometheus | CloudWatch Metrics |
-| **Logs** | Loki | CloudWatch Logs |
-| **Tracing** | Tempo/Jaeger | AWS X-Ray |
-| **Dashboards** | Grafana | CloudWatch Dashboards |
-| **Alertas** | Alertmanager | CloudWatch Alarms |
-| **Uptime** | Uptime Kuma | CloudWatch Synthetics |
-| **Frontend** | Web Vitals | CloudWatch RUM |
-| **Custo** | $0 (local) | AWS service charges |
+| Aspecto | Dev (Floci) | VPS (Hostinger) | Produção (AWS) |
+|---------|-------------|-----------------|----------------|
+| **Métricas** | CloudWatch Metrics (via Floci) | Prometheus | CloudWatch Metrics |
+| **Logs** | CloudWatch Logs (via Floci) | Loki | CloudWatch Logs |
+| **Tracing** | X-Ray (via Floci) | Tempo/Jaeger | AWS X-Ray |
+| **Dashboards** | CloudWatch Dashboards (via Floci) | Grafana | CloudWatch Dashboards |
+| **Alertas** | CloudWatch Alarms (via Floci) | Alertmanager | CloudWatch Alarms |
+| **Uptime** | CloudWatch Synthetics (via Floci) | Uptime Kuma | CloudWatch Synthetics |
+| **Frontend** | CloudWatch RUM (via Floci) | Web Vitals | CloudWatch RUM |
+| **Custo** | $0 (local) | $0 (self-hosted) | AWS service charges |
+| **Código** | boto3 idêntico à produção | OpenTelemetry/Prometheus | boto3 nativo AWS |
 
 ---
 
