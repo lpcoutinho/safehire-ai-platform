@@ -1,0 +1,359 @@
+# ============================================
+# docker-compose.vps.yml
+# Stack VPS (Hostinger) — open-source observability
+# Uso: docker-compose -f docker-compose.vps.yml up -d
+# ============================================
+services:
+
+  # ============================================
+  # INFRAESTRUTURA
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: safehire-postgres
+    environment:
+      POSTGRES_DB: safehire
+      POSTGRES_USER: safehire
+      POSTGRES_PASSWORD: safehire_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-rds.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U safehire -d safehire"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: safehire-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: safehire
+      RABBITMQ_DEFAULT_PASS: safehire_password
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: safehire-valkey
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: safehire-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: safehire
+      MINIO_ROOT_PASSWORD: safehire_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  # ============================================
+  # OBSERVABILIDADE (Open-Source)
+  # ============================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: safehire-otel-collector
+    command: ["--config=/etc/otel-collector-config.yml"]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./monitoring/otel/otel-collector-config.yml:/etc/otel-collector-config.yml
+    depends_on:
+      - loki
+      - tempo
+      - prometheus
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: safehire-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml
+      - prometheus_data:/prometheus
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: safehire-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:latest
+    container_name: safehire-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml
+      - loki_data:/loki
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: safehire-tempo
+    ports:
+      - "3200:3200"
+    volumes:
+      - ./monitoring/tempo/tempo.yml:/etc/tempo/tempo.yml
+      - tempo_data:/tmp/tempo
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: safehire-jaeger
+    ports:
+      - "16686:16686"
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: safehire-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/config.yml:/etc/alertmanager/config.yml
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:latest
+    container_name: safehire-uptime-kuma
+    ports:
+      - "3002:3001"
+    volumes:
+      - uptime_kuma_data:/app/data
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  # ============================================
+  # SERVIÇOS DA APLICAÇÃO
+  # ============================================
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: safehire-auth-service
+    environment:
+      DATABASE_URL: postgresql+asyncpg://safehire:safehire_password@postgres:5432/safehire?sslmode=disable
+      AUTH_SCHEMA: auth_schema
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-key-change-me}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      DEBUG: ${DEBUG:-1}
+      OBSERVABILITY_STACK: vps
+      ENV: vps
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: safehire-api-gateway
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8000
+      CORE_SERVICE_URL: http://core-management-api:8000
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-key-change-me}
+      JWT_ALGORITHM: HS256
+      VALKEY_URL: redis://valkey:6379/0
+      RATE_LIMIT_REQUESTS: 100
+      RATE_LIMIT_WINDOW: 60
+      DEBUG: ${DEBUG:-1}
+      OBSERVABILITY_STACK: vps
+      ENV: vps
+    ports:
+      - "8000:8000"
+    depends_on:
+      auth-service:
+        condition: service_started
+      core-management-api:
+        condition: service_started
+      valkey:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  core-management-api:
+    build:
+      context: ./core-management-api
+      dockerfile: Dockerfile
+    container_name: safehire-core-api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://safehire:safehire_password@postgres:5432/safehire?sslmode=disable
+      CORE_SCHEMA: core_schema
+      S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: safehire
+      AWS_SECRET_ACCESS_KEY: safehire_password
+      AWS_REGION: us-east-1
+      S3_BUCKET_NAME: safehire-curriculos
+      RABBITMQ_URL: amqp://safehire:safehire_password@rabbitmq:5672/
+      RABBITMQ_QUEUE: candidatos.novos
+      VALKEY_URL: redis://valkey:6379/1
+      DEBUG: ${DEBUG:-1}
+      OBSERVABILITY_STACK: vps
+      ENV: vps
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  agent-worker-service:
+    build:
+      context: ./agent-worker-service
+      dockerfile: Dockerfile
+    container_name: safehire-agent-worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://safehire:safehire_password@postgres:5432/safehire?sslmode=disable
+      AGENT_SCHEMA: agent_schema
+      S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: safehire
+      AWS_SECRET_ACCESS_KEY: safehire_password
+      AWS_REGION: us-east-1
+      S3_BUCKET_NAME: safehire-curriculos
+      RABBITMQ_URL: amqp://safehire:safehire_password@rabbitmq:5672/
+      RABBITMQ_QUEUE: candidatos.novos
+      VALKEY_URL: redis://valkey:6379/2
+      EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      EMBEDDING_DIMENSION: 384
+      LLM_MODEL: gpt-4
+      LLM_API_KEY: ${OPENAI_API_KEY:-}
+      MAX_CONCURRENT_JOBS: 3
+      JOB_TIMEOUT: 600
+      DEBUG: ${DEBUG:-1}
+      OBSERVABILITY_STACK: vps
+      ENV: vps
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+  frontend-app:
+    build:
+      context: ./frontend-app
+      dockerfile: Dockerfile
+    container_name: safehire-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://api-gateway:8000
+      NEXT_PUBLIC_APP_NAME: SafeHire AI
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api-gateway
+    networks:
+      - safehire-network
+    restart: unless-stopped
+
+# ============================================
+# VOLUMES
+# ============================================
+volumes:
+  postgres_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  tempo_data:
+  uptime_kuma_data:
+
+# ============================================
+# NETWORKS
+# ============================================
+networks:
+  safehire-network:
+    driver: bridge
+    internal: false
