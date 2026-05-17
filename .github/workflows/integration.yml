@@ -1,0 +1,26 @@
+name: Integration
+
+on:
+  push:
+    branches: [develop, staging, main]
+  pull_request:
+    branches: [develop, staging, main]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Validate docker-compose config
+        run: docker compose config
+
+      - name: Validate VPS docker-compose config
+        run: docker compose -f docker-compose.vps.yml config
+
+      - name: Check submodule pointers
+        run: |
+          git submodule status
+          git submodule foreach 'git status --short || true'
