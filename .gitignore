@@ -34,3 +34,7 @@ node_modules/
 dist/
 build/
 .next/
+# OpenTofu
+infra/tofu/.terraform/
+infra/tofu/*.tfstate
+infra/tofu/*.tfstate.backup

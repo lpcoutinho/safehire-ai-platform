@@ -1,0 +1,11 @@
+environment         = "staging"
+aws_region          = "us-east-1"
+vpc_cidr            = "10.0.0.0/16"
+availability_zones  = ["us-east-1a", "us-east-1b"]
+db_instance_class   = "db.t3.medium"
+db_allocated_storage = 20
+cache_node_type     = "cache.t3.micro"
+ecs_task_cpu        = 256
+ecs_task_memory     = 512
+ecs_desired_count   = 1
+domain_name         = "staging.safehire.ai"

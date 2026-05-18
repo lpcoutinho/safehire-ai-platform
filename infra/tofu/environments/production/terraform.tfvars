@@ -1,0 +1,11 @@
+environment         = "production"
+aws_region          = "us-east-1"
+vpc_cidr            = "10.0.0.0/16"
+availability_zones  = ["us-east-1a", "us-east-1b", "us-east-1c"]
+db_instance_class   = "db.r6g.large"
+db_allocated_storage = 100
+cache_node_type     = "cache.r6g.large"
+ecs_task_cpu        = 1024
+ecs_task_memory     = 2048
+ecs_desired_count   = 2
+domain_name         = "safehire.ai"
