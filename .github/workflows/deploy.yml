@@ -10,10 +10,16 @@ on:
         type: choice
         options:
           - vps
-          - aws
+          - aws-staging
+          - aws-production
+      image_tag:
+        description: "Image tag to deploy (default: latest)"
+        required: false
+        default: latest
 
 jobs:
-  deploy:
+  deploy-vps:
+    if: ${{ startsWith(github.event.inputs.environment, 'vps') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,13 +27,53 @@ jobs:
           submodules: recursive
 
       - name: Deploy to VPS
-        if: ${{ github.event.inputs.environment == 'vps' }}
         run: |
           echo "Deploying full stack to VPS..."
           echo "ssh ${{ secrets.VPS_HOST }} 'docker compose -f docker-compose.vps.yml pull && docker compose -f docker-compose.vps.yml up -d'"
 
-      - name: Deploy to AWS
-        if: ${{ github.event.inputs.environment == 'aws' }}
+  deploy-aws:
+    if: ${{ startsWith(github.event.inputs.environment, 'aws') }}
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: us-east-1
+      ENV_SUFFIX: ${{ github.event.inputs.environment == 'aws-production' && 'production' || 'staging' }}
+    defaults:
+      run:
+        working-directory: infra/tofu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.7.0
+
+      - name: OpenTofu Init
         run: |
-          echo "Deploying full stack to AWS ECS..."
-          echo "aws ecs update-service --cluster safehire --services auth-service,api-gateway,core-management-api --force-new-deployment"
+          tofu init \
+            -backend-config="bucket=safehire-tofu-state" \
+            -backend-config="key=${{ env.ENV_SUFFIX }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=safehire-tofu-locks" \
+            -backend-config="encrypt=true"
+
+      - name: OpenTofu Plan
+        run: |
+          tofu plan \
+            -var-file="environments/${{ env.ENV_SUFFIX }}/terraform.tfvars" \
+            -var="db_password=${{ secrets.DB_PASSWORD }}" \
+            -var="ecr_image_registry=${{ vars.ECR_IMAGE_REGISTRY }}" \
+            -var="image_tag=${{ github.event.inputs.image_tag }}" \
+            -out=tfplan
+
+      - name: OpenTofu Apply
+        run: tofu apply tfplan
