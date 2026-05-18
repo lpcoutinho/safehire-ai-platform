@@ -12,24 +12,18 @@ services:
     image: floci/floci:latest
     container_name: safehire-floci
     ports:
-      # AWS Emulator API (S3, SQS, CloudWatch, X-Ray, etc.)
-      - "4566:4566"
-      # RDS PostgreSQL
-      - "5433:5432"
-      # SQS (substitui RabbitMQ)
-      - "9326:9324"
-      - "9327:9325"  # SQS Management UI
-      # ElastiCache (substitui Valkey)
-      - "6380:6379"
-      # S3 Management UI
-      - "8089:8080"
+      - "4566:4566"        # Edge: S3, SQS, DynamoDB, IAM, ECS, CloudWatch, X-Ray
+      - "5433:5432"        # RDS PostgreSQL
+      - "6380:6379"        # ElastiCache Valkey
+      # - "9326:9324"      # SQS raw (redundante, acessível via 4566)
+      # - "9327:9325"      # SQS UI (descomentar pra debug)
+      # - "8089:8080"      # S3 UI (descomentar pra debug)
     environment:
-      SERVICES: sqs,s3,rds,elasticache,cloudwatch,logs,xray
+      SERVICES: sqs,s3,rds,elasticache,cloudwatch,logs,xray,dynamodb
       DEBUG: ${DEBUG:-1}
       DATA_DIR: /tmp/localstack_data
       RDS_DEFAULT_ENGINE: postgres
       RDS_DEFAULT_ENGINE_VERSION: "15"
-      VALKEY_PORT: 6379
     volumes:
       - floci_data:/tmp/localstack_data
       - ./scripts/init-rds.sql:/docker-entrypoint-initdb.d/init.sql
@@ -133,8 +127,6 @@ services:
       S3_BUCKET_NAME: safehire-curriculos
       AWS_SQS_ENDPOINT_URL: http://floci:4566
       SQS_QUEUE_NAME: candidatos.novos
-      RABBITMQ_URL: ""
-      RABBITMQ_QUEUE: ""
       VALKEY_URL: redis://floci:6379/1
       DEBUG: ${DEBUG:-1}
       OBSERVABILITY_STACK: floci
@@ -148,6 +140,7 @@ services:
       - safehire-network
     restart: unless-stopped
 
+  # Worker — consome SQS, não expõe porta HTTP
   agent-worker-service:
     build:
       context: ./agent-worker-service
@@ -163,8 +156,6 @@ services:
       S3_BUCKET_NAME: safehire-curriculos
       AWS_SQS_ENDPOINT_URL: http://floci:4566
       SQS_QUEUE_NAME: candidatos.novos
-      RABBITMQ_URL: ""
-      RABBITMQ_QUEUE: ""
       VALKEY_URL: redis://floci:6379/2
       EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
       EMBEDDING_DIMENSION: 384
